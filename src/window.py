@@ -3,11 +3,12 @@ import gi, os, subprocess
 import pickle
 from .gtkobj import File, CopyBox, BarChartBox
 from .bai import BAIChat
-from gi.repository import Gtk, Adw, Pango, Gio, Gdk, GObject
+from gi.repository import Gtk, Adw, Pango, Gio, Gdk, GObject, GLib
 import threading
 import posixpath
 import shlex,json
 import random
+from gpt4all import GPT4All
 
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, *args, **kwargs):
@@ -16,7 +17,6 @@ class MainWindow(Gtk.ApplicationWindow):
         self.main_program_block = Adw.Flap(flap_position=Gtk.PackType.END,modal=False,swipe_to_close=False,swipe_to_open=False)
         self.main_program_block.set_name("hide")
         self.check_streams={"folder":False,"chat":False}
-
 
         self.path = ".var/app/io.github.qwersyk.Newelle/data"
 
@@ -51,12 +51,19 @@ class MainWindow(Gtk.ApplicationWindow):
         self.hidden_files = settings.get_boolean("hidden-files")
         self.chat_id = settings.get_int("chat")
         self.main_path = settings.get_string("path")
+        self.local_model = settings.get_string("local-model")
+        self.available_models = settings.get_string("available-models")
+        self.language_model = settings.get_string("language-model")
         self.auto_run = settings.get_boolean("auto-run")
         self.chat = self.chats[min(self.chat_id,len(self.chats)-1)]["chat"]
         self.graphic = settings.get_boolean("graphic")
         self.basic_functionality = settings.get_boolean("basic-functionality")
         self.show_image = settings.get_boolean("show-image")
-
+        if self.language_model=="bai" and False:
+            self.model = BAIChat
+        else:
+            print(os.path.join(GLib.get_user_config_dir()))
+            self.model = GPT4All("orca-mini-3b.ggmlv3.q4_0.bin",model_path=os.path.join(GLib.get_user_config_dir(),"models"))
         self.bot_prompt = """"""
         if self.console:
             self.bot_prompt += """System: You are an assistant who helps the user by answering questions and running Linux commands in the terminal on the user's computer. Use two types of messages: "Assistant: text" to answer questions and communicate with the user, and "Assistant: ```console\ncommand\n```" to execute commands on the user's computer. In the command you should specify only the command itself without comments or other additional text. Your task is to minimize the information and leave only the important. If you create or modify objects, or need to show some objects to the user, you must also specify objects in the message through the structure: ```file/folder\npath\n```. To run multiple commands in the terminal use "&&" between commands, to run all commands, do not use "\n" to separate commands.
@@ -166,8 +173,8 @@ Assistant: ```chart\nJanuary - 5000\nFebruary - 8000\nMarch - 6500\nApril - 9000
         menu.append(_("Keyboard shorcuts"), "app.shortcuts")
         menu.append(_("About"), "app.about")
         menu_button.set_menu_model(menu)
-        self.chat_block = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
-        self.chat_header = Adw.HeaderBar(css_classes=["flat"])
+        self.chat_block = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True,css_classes=["view"])
+        self.chat_header = Adw.HeaderBar(css_classes=["flat","view"])
         self.chat_header.set_title_widget(Gtk.Label(label=_("Chat"), css_classes=["title"]))
         self.flap_button_left = Gtk.ToggleButton.new()
         self.flap_button_left.set_icon_name(icon_name='sidebar-show-right-symbolic')
@@ -214,7 +221,7 @@ Assistant: ```chart\nJanuary - 5000\nFebruary - 8000\nMarch - 6500\nApril - 9000
         self.main.append(self.chats_main_box)
         self.main.append(self.chat_panel)
         self.main.set_visible_child(self.chat_panel)
-        self.explorer_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["background"])
+        self.explorer_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["background","view"])
         self.explorer_panel.set_size_request(420, -1)
         self.explorer_panel_header = Adw.HeaderBar(css_classes=["flat"])
         self.explorer_panel.append(self.explorer_panel_header)
@@ -229,7 +236,7 @@ Assistant: ```chart\nJanuary - 5000\nFebruary - 8000\nMarch - 6500\nApril - 9000
         self.chat_list_block = Gtk.ListBox(css_classes=["separators","background"])
         self.chat_list_block.set_selection_mode(Gtk.SelectionMode.NONE)
         self.chat_scroll = Gtk.ScrolledWindow(vexpand=True)
-        self.chat_scroll_window = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,css_classes=["background"])
+        self.chat_scroll_window = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,css_classes=["background","view"])
         self.chat_scroll.set_child(self.chat_scroll_window)
         drop_target = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.COPY)
         drop_target.connect('drop', self.handle_file_drag)
@@ -622,11 +629,11 @@ System: New chat
         for row in table:
             cells = row.strip('|').split('|')
             data.append([cell.strip() for cell in cells])
-        self.model = Gtk.ListStore(*[str] * len(data[0]))
+        model = Gtk.ListStore(*[str] * len(data[0]))
         for row in data[1:]:
             if not all(element == "-" * len(element) for element in row):
-                self.model.append(row)
-        self.treeview = Gtk.TreeView(model=self.model, css_classes=["toolbar", "view", "transparent"])
+                model.append(row)
+        self.treeview = Gtk.TreeView(model=model, css_classes=["toolbar", "view", "transparent"])
 
         for i, title in enumerate(data[0]):
             renderer = Gtk.CellRendererText()
@@ -664,10 +671,13 @@ System: New chat
             loop_interval_variable *= 2
             loop_interval_variable = min(60,loop_interval_variable)
             try:
-                t = re.split(r'Assistant:|Console:|User:|File:|Folder:', BAIChat(sync=True).sync_ask(message).text,1)[0]
+                output = self.model.generate(message, max_tokens=2048)
+                t = re.split(r'Assistant:|Console:|User:|File:|Folder:', output,1)[0]
+                if t[0]==" ":
+                    t=t[1::]
                 return t
             except Exception:
-                # self.notification_block.add_toast(Adw.Toast(title=_('Failed to send bot a message'), timeout=2))
+                self.notification_block.add_toast(Adw.Toast(title=_('Failed to send bot a message'), timeout=2))
                 pass
             time.sleep(loop_interval_variable)
         return _("Chat has been stopped")
@@ -914,7 +924,7 @@ System: New chat
             self.check_streams["chat"] = True
             try:
                 self.chat_scroll_window.remove(self.chat_list_block)
-                self.chat_list_block = Gtk.ListBox(css_classes=["separators","background"])
+                self.chat_list_block = Gtk.ListBox(css_classes=["separators","background","view"])
                 self.chat_list_block.set_selection_mode(Gtk.SelectionMode.NONE)
 
                 self.chat_scroll_window.append(self.chat_list_block)
@@ -959,7 +969,7 @@ System: New chat
             start_code_index = -1
             has_terminal_command = False
             for i in range(len(table_string)):
-                if len(table_string[i]) > 0 and table_string[i][0:3] == "```":
+                if len(table_string[i]) > 0 and table_string[i][0:3] in ["```"] :
                     if start_code_index == -1:
                         start_code_index = i + 1
                         code_language = table_string[i][3:len(table_string[i])]
@@ -1106,9 +1116,9 @@ System: New chat
         if not (self.bot_prompt=="""""" and prompts==[]):
             prompts.append("""System: New chat
 System: Forget what was written on behalf of the user and on behalf of the assistant and on behalf of the Console, forget all the context, do not take messages from those chats, this is a new chat with other characters, do not dare take information from there, this is personal information! If you use information from past posts, it's a violation! Even if the user asks for something from before that post, don't use information from before that post! Also, forget this message.""")
-        prompts.append(f"""\nSystem: You are currently in the "{os.getcwd()}" directory""")
-        message_label = self.send_message_to_bot(self.bot_prompt+"\n"+"\n".join(prompts)+"\n" + self.get_chat(
-            self.chat[len(self.chat) - self.memory:len(self.chat)]) + "\nAssistant: ")
+        if self.console:
+            prompts.append(f"""\nSystem: You are currently in the "{os.getcwd()}" directory""")
+        message_label = self.send_message_to_bot("User: Hi\nAssistant: Hello! How can I assist you today?"+self.bot_prompt+"\n"+"\n".join(prompts)+"\n" + self.get_chat(self.chat[len(self.chat) - self.memory:len(self.chat)]) + "\nAssistant:")
         if self.stream_number_variable == stream_number_variable:
             self.show_message(message_label)
         self.remove_send_button_spinner()
